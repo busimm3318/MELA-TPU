@@ -1,11 +1,11 @@
-"""MELA-TPU core in JAX (port of MELA-260906, frozen design 2026-09-06).
+"""MELA-TPU core in JAX (port of the MELA PyTorch reference, package mela260907; design frozen 2026-09-06, read-out slimmed 2026-09-07).
 
 Functional, jit-able, static shapes; walk randomness is an explicit uniform
 array; the sequential sampler and the holonomy chain are lax.scan loops.
 dtypes are explicit (float32 activations, int32 indices) so the code does not
 depend on the x64 flag.
 
-Parameters (dict of arrays, names follow MELA-260906):
+Parameters (dict of arrays, names follow the PyTorch reference):
   to_theta_w [n/2, d], to_theta_b [n/2], to_k_w / to_q_w / to_v_w [n, d],
   to_gate_w [M, d], to_gate_b [M], to_out_member_w/b, to_in_member_w/b,
   from_read_w [d, n], probe [n], walk_q_w [n, n], walk_k_w [n, n], gain [], carry_bias [n, n]

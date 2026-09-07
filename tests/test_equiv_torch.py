@@ -1,4 +1,4 @@
-"""Gate J-1: the JAX core equals MELA-260906 (PyTorch, CPU) on identical weights and walk uniforms.
+"""Gate J-1: the JAX core equals the MELA PyTorch reference (package mela260907, CPU) on identical weights and walk uniforms.
 Run from the MELA-TPU root:  python tests/test_equiv_torch.py
 """
 import os
@@ -9,7 +9,10 @@ import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-sys.path.insert(0, os.path.join(os.path.dirname(ROOT), "MELA-260907"))
+_REF = os.environ.get("MELA_REF_DIR") or next((p for p in (os.path.join(os.path.dirname(ROOT), d) for d in ("MELA-260907", "MELA")) if os.path.isdir(p)), None)
+if _REF is None:
+    raise SystemExit("J-1 needs the PyTorch reference (github.com/OWNER/MELA) as a sibling directory `MELA` or `MELA-260907`, or MELA_REF_DIR")
+sys.path.insert(0, _REF)
 import jax  # noqa: E402
 import jax.numpy as jnp  # noqa: E402
 import torch  # noqa: E402

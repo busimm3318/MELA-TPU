@@ -1,0 +1,4 @@
+jax>=0.4.35
+optax
+numpy
+# tests/test_equiv_torch.py additionally needs torch>=2.8 and the MELA reference repository

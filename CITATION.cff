@@ -1,0 +1,11 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "MELA-TPU: JAX/TPU port of the MELA linear-time layer with learned non-commutative loop memory"
+type: software
+authors:
+  - family-names: Shim
+    given-names: Dongsu
+version: "j0.3"
+date-released: "2026-09-07"
+license: Apache-2.0
+repository-code: "https://github.com/OWNER/MELA-TPU"
