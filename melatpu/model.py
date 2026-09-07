@@ -1,10 +1,23 @@
 """JAX LM around the MELA-TPU core: pre-norm block (MELA + SwiGLU), tied embedding head,
-optax AdamW training step. Parameters are nested dicts (pytrees)."""
+optax AdamW training step. Parameters are nested dicts (pytrees).
+
+Training-path contract (MELA-TPU j0.5):
+  * walk randomness is generated INSIDE the jitted step from one typed key
+    (fold_in per step / block / event), so no host-side RNG, no per-step H2D copies,
+    and every host of a multi-host run draws the same stream; the explicit `us`
+    argument remains for equivalence tests;
+  * every block is rematerialised (jax.checkpoint) so activation memory does not grow
+    with depth; the event walk inside the block has its own remat (core.layer_forward);
+  * make_train_step takes an optional device mesh for data-parallel sharding over the
+    batch axis (jit SPMD; the per-step transport scale, a mean over (B,W), is reduced
+    across devices by XLA) and donates the parameter/optimizer buffers.
+"""
 from __future__ import annotations
 
 import jax
 import jax.numpy as jnp
 import optax
+from jax.sharding import NamedSharding, PartitionSpec as PS
 
 from . import core
 
@@ -36,39 +49,81 @@ def layernorm(x, g, b, eps=1e-5):
     return (x - m) / jnp.sqrt(v + eps) * g + b
 
 
-def lm_forward(P, cfg, tokens, us):
-    """tokens [B,T] int; us: list over blocks of lists over events of [B,W,L+1,2] uniforms."""
+def n_events(cfg):
+    return len(range(cfg["k_event"], cfg["T"], cfg["k_event"]))
+
+
+def walk_uniform_tree(key, layers, n_ev, B, W, L):
+    """Walk uniforms for one step from one typed key: list over blocks of lists over
+    events of [B,W,L+1,2] (the layout core.layer_forward consumes). Deterministic in
+    (key, block, event); call inside jit."""
+    return [[jax.random.uniform(jax.random.fold_in(jax.random.fold_in(key, bi), ei), (B, W, L + 1, 2), F32)
+             for ei in range(n_ev)] for bi in range(layers)]
+
+
+def _block(cfg, blk, h, u_list):
+    out, inst = core.layer_forward(blk["mix"], cfg, layernorm(h, blk["n1_g"], blk["n1_b"]), u_list)
+    h = h + out
+    y = layernorm(h, blk["n2_g"], blk["n2_b"])
+    h = h + (jax.nn.silu(y @ blk["mlp_gate"].T) * (y @ blk["mlp_up"].T)) @ blk["mlp_down"].T
+    return h, inst
+
+
+def lm_forward(P, cfg, tokens, us=None, key=None):
+    """tokens [B,T] int. Either `us` (list over blocks of lists over events of [B,W,L+1,2]
+    uniforms, for equivalence tests) or `key` (typed PRNG key; uniforms drawn in-graph)."""
+    B, T = tokens.shape
+    if us is None:
+        us = walk_uniform_tree(key, len(P["blocks"]), n_events(cfg), B, cfg["n_walks"], cfg["walk_len"])
     h = P["emb"][tokens]
     insts = []
+    block = jax.checkpoint(lambda blk, h, u: _block(cfg, blk, h, u)) if cfg.get("remat_blocks", True) \
+        else (lambda blk, h, u: _block(cfg, blk, h, u))
     for bi, blk in enumerate(P["blocks"]):
-        out, inst = core.layer_forward(blk["mix"], cfg, layernorm(h, blk["n1_g"], blk["n1_b"]), us[bi])
-        h = h + out
-        y = layernorm(h, blk["n2_g"], blk["n2_b"])
-        h = h + (jax.nn.silu(y @ blk["mlp_gate"].T) * (y @ blk["mlp_up"].T)) @ blk["mlp_down"].T
+        h, inst = block(blk, h, us[bi])
         insts.append(inst)
     logits = layernorm(h, P["nf_g"], P["nf_b"]) @ P["emb"].T
     return logits, insts
 
 
-def loss_fn(P, cfg, x, y, us):
-    logits, insts = lm_forward(P, cfg, x, us)
+def loss_fn(P, cfg, x, y, us=None, key=None):
+    logits, insts = lm_forward(P, cfg, x, us=us, key=key)
     logp = jax.nn.log_softmax(logits, axis=-1)
     nll = -jnp.take_along_axis(logp, y[..., None], axis=-1)[..., 0]
     return nll.mean(), insts
 
 
-def make_train_step(cfg, lr=1e-3, clip=1.0):
+def data_mesh():
+    """One-axis mesh over every visible device (single host; multi-host after jax.distributed.initialize)."""
+    try:
+        return jax.make_mesh((jax.device_count(),), ("data",))
+    except AttributeError:                                   # older jax
+        import numpy as np
+        return jax.sharding.Mesh(np.array(jax.devices()), ("data",))
+
+
+def make_train_step(cfg, lr=1e-3, clip=1.0, mesh=None):
+    """step(P, opt_state, x, y, key) -> (P, opt_state, loss, insts). `key` is a typed PRNG key
+    for THIS step (caller: jax.random.fold_in(base_key, step_index)). With `mesh`, x/y are
+    sharded over the batch axis and parameters/optimizer state are replicated; parameter and
+    optimizer buffers are donated in both cases."""
     opt = optax.chain(optax.clip_by_global_norm(clip), optax.adamw(lr))
 
-    @jax.jit
-    def step(P, opt_state, x, y, us):
-        (loss, insts), grads = jax.value_and_grad(loss_fn, has_aux=True)(P, cfg, x, y, us)
+    def step(P, opt_state, x, y, key):
+        (loss, insts), grads = jax.value_and_grad(loss_fn, has_aux=True)(P, cfg, x, y, key=key)
         upd, opt_state = opt.update(grads, opt_state, P)
         P = optax.apply_updates(P, upd)
         return P, opt_state, loss, insts
 
-    return opt, step
+    if mesh is None:
+        return opt, jax.jit(step, donate_argnums=(0, 1))
+    rep, dat = NamedSharding(mesh, PS()), NamedSharding(mesh, PS("data"))
+    return opt, jax.jit(step, in_shardings=(rep, rep, dat, dat, rep), out_shardings=(rep, rep, rep, rep),
+                        donate_argnums=(0, 1))
 
 
-def walk_uniforms(key, n_events, B, W, L):
-    return jax.random.uniform(key, (n_events, B, W, L + 1, 2), F32)
+def enable_compilation_cache(path):
+    """Persistent XLA compilation cache (local dir or gs://bucket/dir): survives restarts and
+    spot preemption; the key includes the device topology, so a v5e -> v6e move recompiles."""
+    jax.config.update("jax_compilation_cache_dir", path)
+    jax.config.update("jax_persistent_cache_min_compile_time_secs", 0.0)

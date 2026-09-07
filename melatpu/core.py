@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import lax
 
 EPS = 1e-12
@@ -135,30 +136,35 @@ def expm_fixed(A, squarings):
     return out
 
 
-def transport(st, theta0, squarings, angle_clamp):
-    A = st - jnp.swapaxes(st, -1, -2)
-    raw = jnp.linalg.norm(A.reshape(*A.shape[:-2], -1), axis=-1) / 2 ** 0.5       # [B,W,L]
-    sc = jnp.sqrt(jnp.mean(raw ** 2, axis=(0, 1), keepdims=True))
-    sc = jnp.maximum(jnp.broadcast_to(sc, raw.shape), 1e-4)
-    ang = lax.stop_gradient(theta0 * raw / sc)
-    gain = jnp.minimum(angle_clamp / jnp.maximum(ang, 1e-12), 1.0)
-    omega = theta0 * A / sc[..., None, None] * gain[..., None, None]
-    R = expm_fixed(omega, squarings)
-    inst = dict(max_angle=ang.max(), mean_angle=ang.mean(), floor_frac=(raw < 1e-4).astype(F32).mean(),
-                clamp_frac=(ang > angle_clamp).astype(F32).mean())
-    return R, inst
-
-
-def chain(R, live):
-    B, W, L, n, _ = R.shape
-    hol0 = jnp.broadcast_to(jnp.eye(n, dtype=R.dtype), (B, W, n, n))
+def transport_chain(st, live, theta0, squarings, angle_clamp):
+    """Fused SO(n) transport + ordered product: one lax.scan over the L edges whose body
+    (rotation connection -> per-step RMS angle scale over (B,W) -> clamp -> expm -> product)
+    is checkpointed, so the expm intermediates of an edge are recomputed in the backward
+    instead of being stored for all W x L edges at once (measured: peak memory halves).
+    st [B,W,L,n,n], live [B,W,L] -> hol [B,W,n,n], instruments. Same arithmetic as the
+    reference transport() + chain() (MELA-TPU j0.5)."""
+    B, W, L, n, _ = st.shape
+    hol0 = jnp.broadcast_to(jnp.eye(n, dtype=st.dtype), (B, W, n, n))
 
     def body(hol, inp):
-        Rl, ll = inp
-        return jnp.where(ll[..., None, None], _mm(Rl, hol), hol), None
+        st_l, live_l = inp                                                     # [B,W,n,n], [B,W]
+        A = st_l - jnp.swapaxes(st_l, -1, -2)
+        raw = jnp.linalg.norm(A.reshape(B, W, -1), axis=-1) / 2 ** 0.5         # [B,W]
+        sc = jnp.maximum(jnp.sqrt(jnp.mean(raw ** 2)), 1e-4)                    # per-step RMS over (B,W)
+        ang = lax.stop_gradient(theta0 * raw / sc)
+        gain = jnp.minimum(angle_clamp / jnp.maximum(ang, 1e-12), 1.0)
+        omega = theta0 * A / sc * gain[..., None, None]
+        R = expm_fixed(omega, squarings)
+        hol = jnp.where(live_l[..., None, None], _mm(R, hol), hol)
+        stats = jnp.stack([ang.max(), ang.sum(), (raw < 1e-4).astype(F32).sum(),
+                           (ang > angle_clamp).astype(F32).sum()])
+        return hol, stats
 
-    hol, _ = lax.scan(body, hol0, (jnp.moveaxis(R, 2, 0), jnp.moveaxis(live, 2, 0)))
-    return hol
+    hol, stats = lax.scan(jax.checkpoint(body), hol0, (jnp.moveaxis(st, 2, 0), jnp.moveaxis(live, 2, 0)))
+    cnt = float(B * W * L)
+    inst = dict(max_angle=stats[:, 0].max(), mean_angle=stats[:, 1].sum() / cnt,
+                floor_frac=stats[:, 2].sum() / cnt, clamp_frac=stats[:, 3].sum() / cnt)
+    return hol, inst
 
 
 # --------------------------------------------------------------------------- dedup (static)
@@ -167,9 +173,11 @@ def dedup_static(member, closed):
     the slot-set bit vector (int32-safe), lexicographic stable sort, first of each run."""
     B, W, M = member.shape
     bits = (member > 0).astype(I32)
-    mult = jnp.arange(1, M + 1, dtype=I32)
-    h1 = (bits * ((mult * 40503) % 65521)).sum(-1) % 65521          # < 2^16, sums stay < 2^31
-    h2 = (bits * ((mult * mult * 4099) % 65519)).sum(-1) % 65519
+    m = np.arange(1, M + 1, dtype=np.int64)                          # constants in int64 at trace time:
+    c1 = jnp.asarray((m * 40503) % 65521, dtype=I32)                 # no int32 wrap for any M
+    c2 = jnp.asarray((m * m * 4099) % 65519, dtype=I32)
+    h1 = (bits * c1).sum(-1) % 65521                                 # < 2^16, sums stay < 2^31 for M < 32768
+    h2 = (bits * c2).sum(-1) % 65519
     h1 = jnp.where(closed, h1, 70000 + jnp.arange(W, dtype=I32)[None, :])   # open walks last, distinct
     widx = jnp.broadcast_to(jnp.arange(W, dtype=I32)[None, :], (B, W))
     order = jax.vmap(lambda a, b, c: jnp.lexsort((c, b, a)))(h1, h2, widx)   # by h1, then h2, then index
@@ -238,9 +246,8 @@ def walk_event(cfg, o, im, hd, v, kp, in_mean, u):
     w = sample_slots(A, in_mean, u, cfg["walk_len"])
     Hp, Ap = pair_gather(o, im, hd, v, kp, w["pairs"])
     st = Hp / jnp.maximum(Ap, EPS)[..., None, None]
-    R, tinst = transport(st, cfg["theta0"], cfg["squarings"], cfg["angle_clamp"])
-    hol = chain(R, w["live"])
-    return hol, w, R, tinst
+    hol, tinst = transport_chain(st, w["live"], cfg["theta0"], cfg["squarings"], cfg["angle_clamp"])
+    return hol, w, tinst
 
 
 def layer_forward(P, cfg, h, u_events):
@@ -257,8 +264,8 @@ def layer_forward(P, cfg, h, u_events):
         dI = p["im"][:, lo:t_e].sum(1)
         sw_I = dI if sw_I is None else sw_I + dI
         in_mean = sw_I / t_e
-        hol, w, R, tinst = walk_fn(p["out_step"][:, lo:t_e], p["im"][:, lo:t_e], p["head"][:, lo:t_e],
-                                   p["v"][:, lo:t_e], p["k_prev"][:, lo:t_e], in_mean, u_events[i])
+        hol, w, tinst = walk_fn(p["out_step"][:, lo:t_e], p["im"][:, lo:t_e], p["head"][:, lo:t_e],
+                                p["v"][:, lo:t_e], p["k_prev"][:, lo:t_e], in_mean, u_events[i])
         rep = dedup_static(w["member"], w["closed"])
         valid = w["closed"] & rep
         chi = jnp.swapaxes(w["member"] * rep[..., None].astype(F32), 1, 2)          # [B,M,W]
@@ -280,7 +287,7 @@ def layer_forward(P, cfg, h, u_events):
         eye = jnp.eye(n, dtype=F32)
         inst.append(dict(K=rep.sum(-1).astype(F32).mean(), closed_frac=cf.mean(),
                          hol_norm=(jnp.linalg.norm(hol.reshape(B, -1, n * n), axis=-1) * cf).sum() / denom,
-                         orth_drift=((jnp.abs(jnp.swapaxes(hol, -1, -2) @ hol - eye).reshape(B, -1, n * n).max(-1)) * cf).sum() / denom,
+                         orth_drift=((jnp.abs(_mm(jnp.swapaxes(hol, -1, -2), hol) - eye).reshape(B, -1, n * n).max(-1)) * cf).sum() / denom,   # HIGHEST: the instrument must not add its own bf16 error on TPU
                          occupancy=((w["member"] > 0) & w["closed"][..., None]).any(1).astype(F32).mean(),
                          **tinst))
     read = interior(p["phi"], p["head"], p["q"], p["k_prev"], p["v"], C, corr_at)
