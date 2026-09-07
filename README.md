@@ -1,6 +1,6 @@
 # MELA-TPU
 
-JAX port of the frozen MELA design (PyTorch reference: https://github.com/OWNER/MELA, package `mela260907`), built for Cloud TPUs.
+JAX port of the frozen MELA design (PyTorch reference: https://github.com/busimm3318/MELA, package `mela260907`), built for Cloud TPUs.
 Functional core (`melatpu/core.py`), LM + optax step (`melatpu/model.py`), Colab notebooks for the
 JAX-vs-PyTorch/XLA measurement (`colab/`).
 
