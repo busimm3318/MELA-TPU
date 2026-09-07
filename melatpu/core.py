@@ -32,7 +32,8 @@ def _pick(logits, u):
     """Inverse-CDF categorical pick per row. logits [R, M], u [R] -> idx [R] int32, logp of pick [R]."""
     logp = jax.nn.log_softmax(logits, axis=-1)
     cdf = jnp.cumsum(jnp.exp(logp), axis=-1)
-    idx = jax.vmap(lambda c, uu: jnp.searchsorted(c, uu))(cdf, u.astype(cdf.dtype))
+    # compare-and-sum inverse CDF (== searchsorted left); TPU-friendly for tables <= 512
+    idx = (cdf < u.astype(cdf.dtype)[:, None]).sum(-1)
     idx = jnp.minimum(idx, logits.shape[-1] - 1).astype(I32)
     lp = jnp.take_along_axis(logp, idx[:, None], axis=-1)[:, 0]
     return idx, lp
