@@ -110,21 +110,28 @@ def pair_gather(out_step, in_member, head, v, k_prev, pairs):
 
 
 # --------------------------------------------------------------------------- transport
+_HI = jax.lax.Precision.HIGHEST   # rotation products at full fp32 operand precision on TPU (6 bf16 passes); the rest of the model keeps the default
+
+
+def _mm(a, b):
+    return jnp.matmul(a, b, precision=_HI)
+
+
 def _expm_t12(A):
     I = jnp.broadcast_to(jnp.eye(A.shape[-1], dtype=A.dtype), A.shape)
-    A2 = A @ A
-    A3 = A2 @ A
+    A2 = _mm(A, A)
+    A3 = _mm(A2, A)
     P = [I, A, A2, A3]
     Bs = [sum(c * X for c, X in zip(row, P)) for row in _B12]
-    A6 = Bs[3] @ Bs[3] + Bs[2]
-    return Bs[0] + (Bs[1] + A6) @ A6
+    A6 = _mm(Bs[3], Bs[3]) + Bs[2]
+    return Bs[0] + _mm(Bs[1] + A6, A6)
 
 
 def expm_fixed(A, squarings):
     x = A / (2 ** squarings)
     out = _expm_t12(x)
     for _ in range(squarings):
-        out = out @ out
+        out = _mm(out, out)
     return out
 
 
@@ -148,7 +155,7 @@ def chain(R, live):
 
     def body(hol, inp):
         Rl, ll = inp
-        return jnp.where(ll[..., None, None], Rl @ hol, hol), None
+        return jnp.where(ll[..., None, None], _mm(Rl, hol), hol), None
 
     hol, _ = lax.scan(body, hol0, (jnp.moveaxis(R, 2, 0), jnp.moveaxis(live, 2, 0)))
     return hol

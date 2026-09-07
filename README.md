@@ -8,4 +8,4 @@ Gate J-1 (`tests/test_equiv_torch.py`): identical outputs (rel 6e-7) and gradien
 PyTorch reference on identical weights and walk uniforms (needs ../MELA-260907).
 
 Precision contract: the transport's products need fp32 accuracy -- run with
-`jax.config.update("jax_default_matmul_precision", "highest")` on TPU (measured cost in the notebook).
+the rotation products (Taylor expm, squarings, the ordered chain) call `jnp.matmul(..., precision=HIGHEST)` so they run at full fp32 operand precision on TPU (6 bf16 passes) while the rest of the model keeps the default; no global precision flag is needed (measured cost in the notebook).
