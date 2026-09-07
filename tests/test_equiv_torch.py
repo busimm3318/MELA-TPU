@@ -9,13 +9,13 @@ import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-sys.path.insert(0, os.path.join(os.path.dirname(ROOT), "MELA-260906"))
+sys.path.insert(0, os.path.join(os.path.dirname(ROOT), "MELA-260907"))
 import jax  # noqa: E402
 import jax.numpy as jnp  # noqa: E402
 import torch  # noqa: E402
 
-from mela260906 import Config, MELALayer  # noqa: E402
-from mela260906.walk import walk_uniforms  # noqa: E402
+from mela260907 import Config, MELALayer  # noqa: E402
+from mela260907.walk import walk_uniforms  # noqa: E402
 from melatpu import core  # noqa: E402
 
 
@@ -26,7 +26,7 @@ def torch_params(lay):
                 to_gate_w=sd["to_gate.weight"], to_gate_b=sd["to_gate.bias"],
                 to_out_member_w=sd["to_out_member.weight"], to_out_member_b=sd["to_out_member.bias"],
                 to_in_member_w=sd["to_in_member.weight"], to_in_member_b=sd["to_in_member.bias"],
-                from_read_w=sd["from_read.weight"], walk_q_w=sd["walk_q.weight"], walk_k_w=sd["walk_k.weight"],
+                from_read_w=sd["from_read.weight"], probe=sd["probe"], walk_q_w=sd["walk_q.weight"], walk_k_w=sd["walk_k.weight"],
                 gain=sd["gain"], carry_bias=sd["carry_bias"])
 
 

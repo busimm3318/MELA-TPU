@@ -8,7 +8,7 @@ depend on the x64 flag.
 Parameters (dict of arrays, names follow MELA-260906):
   to_theta_w [n/2, d], to_theta_b [n/2], to_k_w / to_q_w / to_v_w [n, d],
   to_gate_w [M, d], to_gate_b [M], to_out_member_w/b, to_in_member_w/b,
-  from_read_w [d, n], walk_q_w [n, n*n], walk_k_w [n, n*n], gain [], carry_bias [n, n]
+  from_read_w [d, n], probe [n], walk_q_w [n, n], walk_k_w [n, n], gain [], carry_bias [n, n]
 """
 from __future__ import annotations
 
@@ -255,8 +255,8 @@ def layer_forward(P, cfg, h, u_events):
         rep = dedup_static(w["member"], w["closed"])
         valid = w["closed"] & rep
         chi = jnp.swapaxes(w["member"] * rep[..., None].astype(F32), 1, 2)          # [B,M,W]
-        flat = hol.reshape(B, -1, n * n)
-        logits = (flat @ P["walk_q_w"].T) @ jnp.swapaxes(flat @ P["walk_k_w"].T, -1, -2) / n ** 0.5
+        feat = hol @ P["probe"]                                                  # [B,W,n]: holonomy's action on the probe (MELA-260907)
+        logits = (feat @ P["walk_q_w"].T) @ jnp.swapaxes(feat @ P["walk_k_w"].T, -1, -2) / n ** 0.5
         mask = valid[:, None, :]
         logits = jnp.where(mask, logits, -jnp.inf)
         logits = jnp.where(mask.any(-1, keepdims=True), logits, 0.0)
@@ -296,5 +296,6 @@ def init_params(key, cfg):
                 to_gate_w=lin(ks[3], M, d), to_gate_b=jnp.zeros((M,), F32),
                 to_out_member_w=lin(ks[4], M, d), to_out_member_b=jnp.zeros((M,), F32),
                 to_in_member_w=lin(ks[5], M, d), to_in_member_b=jnp.zeros((M,), F32),
-                from_read_w=lin(ks[6], d, n), walk_q_w=lin(ks[7], n, n * n), walk_k_w=lin(ks[7], n, n * n),
+                from_read_w=lin(ks[6], d, n), probe=jax.random.normal(ks[7], (n,), F32) / n ** 0.5,
+                walk_q_w=lin(ks[7], n, n), walk_k_w=lin(ks[7], n, n),
                 gain=jnp.zeros((), F32), carry_bias=jnp.zeros((n, n), F32))
