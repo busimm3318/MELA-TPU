@@ -17,7 +17,8 @@ import jax.numpy as jnp  # noqa: E402
 from melatpu import core, model  # noqa: E402
 
 
-def main(d=64, T=256, B=2, vocab=65, layers=2, steps=6):
+def main(d=64, T=256, B=None, vocab=65, layers=2, steps=6):
+    B = B or 2 * jax.device_count()          # the batch axis is sharded: B must be a multiple of the device count
     model.enable_compilation_cache(os.path.join(tempfile.gettempdir(), "mela_tpu_jax_cache"))
     cfg = core.config(d=d, T=T)
     key = jax.random.key(0)

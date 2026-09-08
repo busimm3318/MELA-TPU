@@ -21,8 +21,17 @@ Author: Dongsu Shim. License: Apache-2.0 (see LICENSE, NOTICE). Cite with CITATI
   step / block / event), per-block `jax.checkpoint`, optional data-parallel mesh
   (`make_train_step(cfg, mesh=data_mesh())`), donated parameter/optimizer buffers,
   `enable_compilation_cache(path)` for local or `gs://` persistent caches;
-* gate J-2 (`tests/test_train_smoke.py`): the jitted training step on the device mesh, loss falls on a
+* gate J-2 (`tests/test_train_smoke.py`, batch = 2 x device count): the jitted training step on the device mesh, loss falls on a
   fixed batch, orth_drift < 1e-3.
 Not yet done (needs a TPU to measure): scan over blocks/events for compile time, the reversible-chain
 custom_vjp, chunk-scan interior, Precision.HIGH trial for the transport, Pallas expm kernel with
 VMEM-resident intermediates.
+
+## j0.7 (2026-09-08): three defects found by an audit against the PyTorch reference
+* `init_params` drew `walk_q_w`, `walk_k_w` (and the probe) from ONE key, so the two read-out
+  matrices were identical at initialisation and the node-attention logits were symmetric;
+  they now use distinct keys. No gate caught this (J-1 loads reference weights).
+* `make_train_step` used optax's AdamW default weight decay 1e-4; the PyTorch reference uses
+  torch.optim.AdamW's default 1e-2. Now an explicit argument defaulting to 1e-2.
+* J-2 and the Colab timing cells used a fixed batch that is not divisible by the chip count of a
+  multi-chip slice (v5e-8, v6e-8); batch is now a multiple of `jax.device_count()`.

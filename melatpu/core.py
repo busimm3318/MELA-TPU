@@ -303,7 +303,7 @@ def config(d, T, chunk=None, walk_len=32, n_walks=64, theta0=1.0, squarings=3, a
 
 def init_params(key, cfg):
     d, n, M = cfg["d"], cfg["n"], cfg["M"]
-    ks = jax.random.split(key, 8)
+    ks = jax.random.split(key, 10)
     lin = lambda k, o, i: jax.random.uniform(k, (o, i), F32, -1 / i ** 0.5, 1 / i ** 0.5)
     return dict(to_theta_w=jnp.zeros((n // 2, d), F32), to_theta_b=jnp.zeros((n // 2,), F32),
                 to_k_w=lin(ks[0], n, d), to_q_w=lin(ks[1], n, d), to_v_w=lin(ks[2], n, d),
@@ -311,5 +311,5 @@ def init_params(key, cfg):
                 to_out_member_w=lin(ks[4], M, d), to_out_member_b=jnp.zeros((M,), F32),
                 to_in_member_w=lin(ks[5], M, d), to_in_member_b=jnp.zeros((M,), F32),
                 from_read_w=lin(ks[6], d, n), probe=jax.random.normal(ks[7], (n,), F32) / n ** 0.5,
-                walk_q_w=lin(ks[7], n, n), walk_k_w=lin(ks[7], n, n),
+                walk_q_w=lin(ks[8], n, n), walk_k_w=lin(ks[9], n, n),   # distinct keys: sharing one made q == k
                 gain=jnp.zeros((), F32), carry_bias=jnp.zeros((n, n), F32))

@@ -102,12 +102,12 @@ def data_mesh():
         return jax.sharding.Mesh(np.array(jax.devices()), ("data",))
 
 
-def make_train_step(cfg, lr=1e-3, clip=1.0, mesh=None):
+def make_train_step(cfg, lr=1e-3, clip=1.0, mesh=None, weight_decay=1e-2):
     """step(P, opt_state, x, y, key) -> (P, opt_state, loss, insts). `key` is a typed PRNG key
     for THIS step (caller: jax.random.fold_in(base_key, step_index)). With `mesh`, x/y are
     sharded over the batch axis and parameters/optimizer state are replicated; parameter and
     optimizer buffers are donated in both cases."""
-    opt = optax.chain(optax.clip_by_global_norm(clip), optax.adamw(lr))
+    opt = optax.chain(optax.clip_by_global_norm(clip), optax.adamw(lr, weight_decay=weight_decay))   # optax defaults to 1e-4, torch.optim.AdamW to 1e-2: match the reference
 
     def step(P, opt_state, x, y, key):
         (loss, insts), grads = jax.value_and_grad(loss_fn, has_aux=True)(P, cfg, x, y, key=key)
