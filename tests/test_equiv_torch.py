@@ -51,7 +51,7 @@ def run(d=64, T=256, B=2, seed=0):
     fwd = jax.jit(lambda P, h, us: core.layer_forward(P, cfg, h, us))
     us = [jnp.asarray(u[i].numpy()) for i in range(n_ev)]
     t0 = time.perf_counter()
-    o_j, inst = fwd(P, jnp.asarray(h.numpy()), us)
+    o_j, inst, _ = fwd(P, jnp.asarray(h.numpy()), us)
     o_j = np.asarray(o_j); t1 = time.perf_counter() - t0
     rel = float(np.abs(o_j - o_t.numpy()).max() / np.abs(o_t.numpy()).max())
     ti = aux["instruments"][0]; ji = jax.tree_util.tree_map(float, inst[0])
@@ -63,7 +63,7 @@ def run(d=64, T=256, B=2, seed=0):
     o1 = lay(h, u=u); w = torch.randn_like(o1); (o1 * w).sum().backward()
     g_t = lay.to_out_member.weight.grad.numpy()
     def loss(P):
-        o, _ = core.layer_forward(P, cfg, jnp.asarray(h.numpy()), us)
+        o, _, _ = core.layer_forward(P, cfg, jnp.asarray(h.numpy()), us)
         return (o * jnp.asarray(w.numpy())).sum()
     g_j = np.asarray(jax.grad(loss)(P)["to_out_member_w"])
     grel = float(np.linalg.norm(g_t - g_j) / np.linalg.norm(g_t))

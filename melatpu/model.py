@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import jax
 import jax.numpy as jnp
+from jax import lax
 import optax
 from jax.sharding import NamedSharding, PartitionSpec as PS
 
@@ -62,11 +63,11 @@ def walk_uniform_tree(key, layers, n_ev, B, W, L):
 
 
 def _block(cfg, blk, h, u_list):
-    out, inst = core.layer_forward(blk["mix"], cfg, layernorm(h, blk["n1_g"], blk["n1_b"]), u_list)
+    out, inst, lp = core.layer_forward(blk["mix"], cfg, layernorm(h, blk["n1_g"], blk["n1_b"]), u_list)
     h = h + out
     y = layernorm(h, blk["n2_g"], blk["n2_b"])
     h = h + (jax.nn.silu(y @ blk["mlp_gate"].T) * (y @ blk["mlp_up"].T)) @ blk["mlp_down"].T
-    return h, inst
+    return h, inst, lp
 
 
 def lm_forward(P, cfg, tokens, us=None, key=None):
@@ -76,21 +77,69 @@ def lm_forward(P, cfg, tokens, us=None, key=None):
     if us is None:
         us = walk_uniform_tree(key, len(P["blocks"]), n_events(cfg), B, cfg["n_walks"], cfg["walk_len"])
     h = P["emb"][tokens]
-    insts = []
+    insts, lps = [], []
     block = jax.checkpoint(lambda blk, h, u: _block(cfg, blk, h, u)) if cfg.get("remat_blocks", True) \
         else (lambda blk, h, u: _block(cfg, blk, h, u))
     for bi, blk in enumerate(P["blocks"]):
-        h, inst = block(blk, h, us[bi])
+        h, inst, lp = block(blk, h, us[bi])
         insts.append(inst)
+        lps.append(lp)
     logits = layernorm(h, P["nf_g"], P["nf_b"]) @ P["emb"].T
-    return logits, insts
+    return logits, insts, lps
 
 
-def loss_fn(P, cfg, x, y, us=None, key=None):
-    logits, insts = lm_forward(P, cfg, x, us=us, key=key)
+def loss_fn(P, cfg, x, y, us=None, key=None, stratum=None):
+    """Cross-entropy plus the walk term (F2).
+
+    The walk is genuinely sampled, so no gradient reaches the routing
+    distributions through the holonomy; the score function supplies it. The walks
+    of the event at t_e are rewarded with the negative mean loss of the tokens at
+    or after t_e -- the only ones they can influence -- and the baseline is the
+    mean of that reward, over a stratum group when one is given (on a task whose
+    difficulty varies inside the batch, a batch-mean advantage is dominated by the
+    difficulty and the score function then rewards a walk for looking easy).
+    mu_walk = 0 is the frozen design."""
+    logits, insts, lps = lm_forward(P, cfg, x, us=us, key=key)
     logp = jax.nn.log_softmax(logits, axis=-1)
-    nll = -jnp.take_along_axis(logp, y[..., None], axis=-1)[..., 0]
-    return nll.mean(), insts
+    per_tok = -jnp.take_along_axis(logp, y[..., None], axis=-1)[..., 0]
+    task = per_tok.mean()
+    mu = cfg.get("mu_walk", 0.0)
+    if not mu:
+        return task, insts
+    events = list(range(cfg["k_event"], cfg["T"], cfg["k_event"]))
+    terms = []
+    for lp_block in lps:
+        for lp, t_e in zip(lp_block, events):
+            r = lax.stop_gradient(-per_tok[:, t_e:].mean(-1))          # [B]
+            if stratum is None:
+                adv = r - r.mean()
+            else:
+                g = stratum.astype(jnp.int32).reshape(-1)
+                oh = jax.nn.one_hot(g, int(g.max()) + 1, dtype=r.dtype)
+                adv = r - oh @ ((oh.T @ r) / jnp.maximum(oh.sum(0), 1.0))
+            terms.append(-(adv * lp.mean(-1)).mean())
+    walk = jnp.stack(terms).sum() / max(1, len(lps))
+    return task + mu * walk, insts
+
+
+def calibrate_theta0(P, cfg, x, us=None, key=None, target=None):
+    """D5. Set each block's transport angle scale from one batch so the mean
+    per-edge angle starts at cfg["theta0_target"] (2.35 rad is the root-mean-square
+    rotation angle of A5 in the representation a single-plane generator can carry).
+    Without the cross-walk normalisation the angle is theta0 times the edge's own
+    generator norm, and that norm was measured at 0.001-0.07: left alone every
+    rotation starts at the identity and the ordered product underflows. Pure: takes
+    a parameter tree and returns a new one."""
+    _, insts, _ = lm_forward(P, cfg, x, us=us, key=key)
+    tgt = target if target is not None else cfg.get("theta0_target", 2.35)
+    blocks = []
+    for blk, inst in zip(P["blocks"], insts):
+        mix = blk["mix"]
+        if "log_theta0" in mix and inst:
+            gen = jnp.stack([e["gen_norm"] for e in inst]).mean()
+            mix = dict(mix, log_theta0=jnp.log(tgt / jnp.maximum(gen, 1e-8)).astype(F32))
+        blocks.append(dict(blk, mix=mix))
+    return dict(P, blocks=blocks)
 
 
 def data_mesh():
