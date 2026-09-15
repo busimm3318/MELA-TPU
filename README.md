@@ -75,10 +75,29 @@ tests/test_equiv_torch.py    J-1  frozen path == mela260907        output rel 4.
 tests/test_equiv_dfixes.py   J-D  main config == mela260915        output rel 1.6e-06
                                   twelve instruments to 1.3e-06, gradients to 2.4e-05
 tests/test_train_smoke.py    J-2  jitted step, loss falls, orth drift 4.3e-06
+tests/test_equiv_harness.py  J-H  the whole harness == the PyTorch harness
+                                  same batch, same uniforms, copied weights:
+                                  logits 3.6e-06, task loss 1.1e-07, gradients
+                                  below 1.4e-04; samplers pick identically
+                                  (0 of 3072 picks differ)
 ```
 
 J-D is the load-bearing one: it says the JAX and PyTorch implementations are the
-same function, so a verdict reached on either applies to both.
+same function, so a verdict reached on either applies to both. J-H extends that
+to everything wrapped around the model -- the task's token stream, the classifier
+head, the loss and the stratified baseline.
+
+**One number in J-H is not held to 1e-04, on purpose.** The walk term is a
+score-function estimator over sampled slot sequences, and a slot is chosen by an
+inverse-CDF lookup, which is a step function of the routing matrix. The two
+implementations sum in different orders, so their routing matrices differ in the
+last bits (about 6e-07 relative); roughly one uniform in three thousand lands
+inside that gap and selects a different slot, and a single flipped walk moves its
+own log-probability by about 34 nats. No correct port can avoid this. The gate
+therefore pins the sampler exactly -- given the same routing matrix and the same
+uniforms, every pick, death and closure agrees -- and then judges the walk term
+against its own seed-to-seed spread, which is the scale at which a difference in
+it could matter. Measured: difference 1.5e-02 against a spread of 5.2e-02.
 
 **Status: unfrozen.** The frozen design stays frozen (`core.config()`, and
 `mela260907` in the reference repository). The current version is the
@@ -87,6 +106,12 @@ the kernel and freeze again after the LOOPWORD verification, so that what gets
 frozen is a mechanism that has been shown to do something. Unfrozen does not mean
 the engineering contract lapses -- static shapes, no host synchronisation inside a
 step and the full-graph trace are gated on every commit.
+
+**Running it on Cloud TPU.** `tpu/` holds the operations layer: a read-only
+preflight, a provisioner that refuses to spend without an explicit flag, a
+teardown that is the only thing standing between a finished run and an overnight
+bill, and the stage-1 fan-out. `tpu/README.md` has the order to run them in and
+the short list of steps that only an account holder can perform.
 
 **What is not known.** Whether the walk works. The fixes are a corrected
 mechanism, not a demonstrated one. `ROLLBACK.md` records what each fix asserts,

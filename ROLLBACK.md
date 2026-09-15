@@ -97,3 +97,46 @@ that what gets frozen is a mechanism that has been shown to do something.
 Unfrozen means the design may change. It does not mean the engineering contract
 lapses: static shapes, no host synchronisation inside a step, and the
 full-graph trace are gated on every commit, here and in the reference.
+
+
+## 2026-09-15: the harness port, and one thing it cannot promise
+
+`melatpu/tasks.py` (the LOOPWORD generator and the classifier), `loopword_jax.py`
+(the arms, checkpointing and resume) and gate J-H complete the port. J-H passes on
+both arms.
+
+Two defects were found and fixed while building it, both in the gate rather than
+in the port:
+
+1. The reference `Classifier.forward` does not pass `u` down to the layer, so it
+   drew fresh walk randomness on every call and the two sides were never compared
+   on the same walks. Fixed by injecting the uniforms.
+2. The gate built the JAX side with `mu_walk=0.1` on every arm, while the
+   reference forces `mu_walk=0.0` on `legacy`. It was comparing a loss carrying
+   the walk term against one without it. Fixed by reading `mu_walk` from the
+   reference config. The legacy arm then agreed to 1e-06 on every gradient, up
+   from 1.7e-02.
+
+**What J-H cannot promise, and why this is not a defect.** The walk term is a
+score-function estimator over sampled slot sequences; the slot is an inverse-CDF
+lookup, hence a step function of the routing matrix. Two float32 summation orders
+give routing matrices that differ by about 6e-07 relative, about one uniform in
+three thousand falls inside that gap, and a single flipped walk shifts its
+log-probability by roughly 34 nats. Measured on the main arm: three of four
+log-probability tensors agree to 7.6e-06, the fourth has one walk in 512 differing,
+and the walk term lands 1.5e-02 apart against a seed-to-seed spread of 5.2e-02.
+
+The gate therefore certifies it in two parts. `sampler_exact()` hands both
+samplers the same routing matrix and the same uniforms and requires every pick,
+death and closure to be identical -- measured 0 of 3072 picks differing, in both
+the escape and the die regimes. The walk term itself is then held to half its own
+seed spread. Rolling this back means restoring a 1e-04 test that no correct port
+can pass; if the tolerance is ever to be tightened, the way to do it is float64 on
+both sides, not a smaller number.
+
+## The tpu/ operations layer
+
+Seven shell scripts, added the same day. They hold no credentials and read none.
+`provision.sh`, `run.sh` and `t1_loopword.sh` refuse to act without an explicit
+`--yes`, and `teardown.sh` is the only script that stops a bill. Removing the
+layer removes no model code: nothing in `melatpu/` imports it.
