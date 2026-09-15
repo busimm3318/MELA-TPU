@@ -140,3 +140,31 @@ Seven shell scripts, added the same day. They hold no credentials and read none.
 `provision.sh`, `run.sh` and `t1_loopword.sh` refuse to act without an explicit
 `--yes`, and `teardown.sh` is the only script that stops a bill. Removing the
 layer removes no model code: nothing in `melatpu/` imports it.
+
+
+## 2026-09-15, later: three defects found by porting the language-model harness
+
+1. **Two parameters were one buffer.** `to_fwd_b` and `to_rev_b` were initialised
+   from the same array object, so the direction gates shared a buffer. Training
+   still worked -- JAX arrays are immutable, so the first gradient separates them
+   -- but the donated-buffer path in the compiled training step rejected it, and
+   the aliasing hid that these are meant to be two independent parameters that
+   merely start equal. Fixed by allocating both.
+2. **The events-off arm could not compute a loss.** With `k_event` past `T` no
+   walk is ever sampled, so the list of score-function terms is empty and stacking
+   it raised. Fixed by returning the task loss alone, which is what the arm means.
+3. **Gate J-1 had been broken by the package rename.** It imported `mela260907`,
+   which no longer exists, and would have fallen back to the plain `Config()` --
+   the current development defaults, not the frozen design. It now resolves the
+   renamed package and takes `Config.legacy()`. Restored at output rel 4.21e-07,
+   the registered value.
+
+Also: the stratified baseline in the language-model loss sized its one-hot from
+`int(stratum.max()) + 1`, which cannot be traced under jit. It now uses the same
+static width the task loss uses. Extra empty columns contribute nothing, so this
+is exact rather than an approximation.
+
+`layer_forward(..., probe=True)` is new and off by default: it reruns the interior
+with the events removed and reports the read perturbation and the size of the
+write. It costs a second pass, so it belongs at evaluation. Removing it removes no
+training behaviour.

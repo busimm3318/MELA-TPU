@@ -62,15 +62,16 @@ def walk_uniform_tree(key, layers, n_ev, B, W, L):
              for ei in range(n_ev)] for bi in range(layers)]
 
 
-def _block(cfg, blk, h, u_list):
-    out, inst, lp = core.layer_forward(blk["mix"], cfg, layernorm(h, blk["n1_g"], blk["n1_b"]), u_list)
+def _block(cfg, blk, h, u_list, probe=False):
+    out, inst, lp = core.layer_forward(blk["mix"], cfg, layernorm(h, blk["n1_g"], blk["n1_b"]),
+                                       u_list, probe=probe)
     h = h + out
     y = layernorm(h, blk["n2_g"], blk["n2_b"])
     h = h + (jax.nn.silu(y @ blk["mlp_gate"].T) * (y @ blk["mlp_up"].T)) @ blk["mlp_down"].T
     return h, inst, lp
 
 
-def lm_forward(P, cfg, tokens, us=None, key=None):
+def lm_forward(P, cfg, tokens, us=None, key=None, probe=False):
     """tokens [B,T] int. Either `us` (list over blocks of lists over events of [B,W,L+1,2]
     uniforms, for equivalence tests) or `key` (typed PRNG key; uniforms drawn in-graph)."""
     B, T = tokens.shape
@@ -78,8 +79,9 @@ def lm_forward(P, cfg, tokens, us=None, key=None):
         us = walk_uniform_tree(key, len(P["blocks"]), n_events(cfg), B, cfg["n_walks"], cfg["walk_len"])
     h = P["emb"][tokens]
     insts, lps = [], []
-    block = jax.checkpoint(lambda blk, h, u: _block(cfg, blk, h, u)) if cfg.get("remat_blocks", True) \
-        else (lambda blk, h, u: _block(cfg, blk, h, u))
+    # the probe pass is an evaluation-time diagnostic, never rematerialised
+    plain = lambda blk, h, u: _block(cfg, blk, h, u, probe=probe)
+    block = jax.checkpoint(plain) if cfg.get("remat_blocks", True) and not probe else plain
     for bi, blk in enumerate(P["blocks"]):
         h, inst, lp = block(blk, h, us[bi])
         insts.append(inst)
@@ -115,9 +117,13 @@ def loss_fn(P, cfg, x, y, us=None, key=None, stratum=None):
                 adv = r - r.mean()
             else:
                 g = stratum.astype(jnp.int32).reshape(-1)
-                oh = jax.nn.one_hot(g, int(g.max()) + 1, dtype=r.dtype)
+                # the group count must be STATIC under jit; extra empty columns
+                # contribute nothing, so a fixed width is exact, not an approximation
+                oh = jax.nn.one_hot(g, cfg.get("n_strata", 64), dtype=r.dtype)
                 adv = r - oh @ ((oh.T @ r) / jnp.maximum(oh.sum(0), 1.0))
             terms.append(-(adv * lp.mean(-1)).mean())
+    if not terms:            # the events-off arm: no walk was sampled, so there is
+        return task, insts   # no score function to add (jnp.stack([]) would raise)
     walk = jnp.stack(terms).sum() / max(1, len(lps))
     return task + mu * walk, insts
 

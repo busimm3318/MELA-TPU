@@ -1,4 +1,4 @@
-"""Gate J-1: the JAX core equals the MELA PyTorch reference (package mela260907, CPU) on identical weights and walk uniforms.
+"""Gate J-1: the JAX core equals the frozen PyTorch design on identical weights and walk uniforms (CPU).
 Run from the MELA-TPU root:  python tests/test_equiv_torch.py
 """
 import os
@@ -9,16 +9,28 @@ import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-_REF = os.environ.get("MELA_REF_DIR") or next((p for p in (os.path.join(os.path.dirname(ROOT), d) for d in ("MELA-260907", "MELA")) if os.path.isdir(p)), None)
+_REF = os.environ.get("MELA_REF_DIR") or next(
+    (p for p in (os.path.join(os.path.dirname(ROOT), d)
+                 for d in ("MELA-260915", "MELA-260913", "MELA-260907", "MELA")) if os.path.isdir(p)), None)
 if _REF is None:
-    raise SystemExit("J-1 needs the PyTorch reference (github.com/OWNER/MELA) as a sibling directory `MELA` or `MELA-260907`, or MELA_REF_DIR")
+    raise SystemExit("J-1 needs the PyTorch reference as a sibling directory, or MELA_REF_DIR")
 sys.path.insert(0, _REF)
 import jax  # noqa: E402
 import jax.numpy as jnp  # noqa: E402
 import torch  # noqa: E402
 
-from mela260907 import Config, MELALayer  # noqa: E402
-from mela260907.walk import walk_uniforms  # noqa: E402
+# The reference package was renamed 260907 -> 260915 when it was unfrozen. The
+# frozen DESIGN did not move: in the renamed package it is Config.legacy(), which
+# is what core.config() mirrors. Taking the plain Config() here would silently
+# compare the JAX frozen path against the current development defaults.
+try:
+    from mela260907 import Config, MELALayer  # noqa: E402
+    from mela260907.walk import walk_uniforms  # noqa: E402
+    frozen_config = Config
+except ModuleNotFoundError:
+    from mela260915 import Config, MELALayer  # noqa: E402
+    from mela260915.walk import walk_uniforms  # noqa: E402
+    frozen_config = Config.legacy
 from melatpu import core  # noqa: E402
 
 
@@ -34,7 +46,7 @@ def torch_params(lay):
 
 
 def run(d=64, T=256, B=2, seed=0):
-    cfg_t = Config(d=d, T=T, chunk=64)
+    cfg_t = frozen_config(d=d, T=T, chunk=64)
     torch.manual_seed(seed)
     lay = MELALayer(cfg_t)
     with torch.no_grad():

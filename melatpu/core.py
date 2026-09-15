@@ -457,8 +457,14 @@ def walk_event(cfg, P, o, im, hd, v, kp, in_mean, u, f=None, r=None):
     return hol, w, tinst, st, lm
 
 
-def layer_forward(P, cfg, h, u_events):
-    """h [B,T,d]; u_events: list (per event) of [B,W,L+1,2] uniforms. Returns out [B,T,d], instruments."""
+def layer_forward(P, cfg, h, u_events, probe=False):
+    """h [B,T,d]; u_events: list (per event) of [B,W,L+1,2] uniforms. Returns out [B,T,d], instruments.
+
+    probe=True adds the events-off read and the write-against-state ratio to the
+    instruments. It costs a second pass over the interior, so it belongs at
+    evaluation, not in the training step. These are the two numbers the write
+    scale was chosen on: the event's perturbation of the read, and the size of
+    what it writes measured against the state it is added to."""
     B, T, d = h.shape
     n, M, C, k_event = cfg["n"], cfg["M"], cfg["chunk"], cfg["k_event"]
     p = projections(P, h, cfg)
@@ -527,6 +533,13 @@ def layer_forward(P, cfg, h, u_events):
                          **tinst))
     read = interior(p["phi"], p["head"], p["q"], p["k_prev"], p["v"], C, corr_at,
                     log_gamma=p["log_gamma"])
+    if probe and corr_at:
+        off = interior(p["phi"], p["head"], p["q"], p["k_prev"], p["v"], C, [],
+                       log_gamma=p["log_gamma"])
+        dr = jnp.linalg.norm(read - off, axis=-1) / jnp.maximum(jnp.linalg.norm(off, axis=-1), EPS)
+        cn = jnp.stack([jnp.linalg.norm(c.reshape(B, M, n * n), axis=-1) for _, c in corr_at]).mean(0)
+        inst.append(dict(dread_med=jnp.median(dr), dread_p95=jnp.quantile(dr.reshape(-1), 0.95),
+                         corr_norm=cn.mean()))
     return read @ P["from_read_w"].T, inst, logprobs
 
 
@@ -603,9 +616,12 @@ def _extra_params(cfg):
         w = jnp.zeros((d, cfg["short_conv"]), F32).at[:, -1].set(1.0)   # identity: current tap 1
         P.update(conv_w=w)
     if cfg["direction_gates"]:
-        b = jnp.full((1,), cfg["direction_init_bias"], F32)
-        P.update(to_fwd_w=jnp.zeros((1, d), F32), to_fwd_b=b,
-                 to_rev_w=jnp.zeros((1, d), F32), to_rev_b=b)
+        b_val = cfg["direction_init_bias"]
+        # two SEPARATE buffers holding the same value: aliasing them makes the two
+        # gates one donated buffer, which XLA rejects, and hides that they are meant
+        # to be independent parameters that start equal (equal gates = undirected)
+        P.update(to_fwd_w=jnp.zeros((1, d), F32), to_fwd_b=jnp.full((1,), b_val, F32),
+                 to_rev_w=jnp.zeros((1, d), F32), to_rev_b=jnp.full((1,), b_val, F32))
     if cfg["theta0_learn"]:
         P.update(log_theta0=jnp.array(jnp.log(cfg["theta0"]), F32))
     if cfg["carry_gain"]:

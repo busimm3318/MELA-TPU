@@ -71,7 +71,7 @@ that is the only thing giving the routing distributions a gradient.
 Gates (CPU, d=64, T=256):
 
 ```
-tests/test_equiv_torch.py    J-1  frozen path == mela260907        output rel 4.2e-07
+tests/test_equiv_torch.py    J-1  frozen path == the frozen design  output rel 4.2e-07
 tests/test_equiv_dfixes.py   J-D  main config == mela260915        output rel 1.6e-06
                                   twelve instruments to 1.3e-06, gradients to 2.4e-05
 tests/test_train_smoke.py    J-2  jitted step, loss falls, orth drift 4.3e-06
@@ -106,6 +106,12 @@ the kernel and freeze again after the LOOPWORD verification, so that what gets
 frozen is a mechanism that has been shown to do something. Unfrozen does not mean
 the engineering contract lapses -- static shapes, no host synchronisation inside a
 step and the full-graph trace are gated on every commit.
+
+**Harnesses.** `loopword_jax.py` runs the group-word task, `charlm_jax.py` the
+character language model. Both checkpoint to a bucket and resume where a
+preemption left them. Both read generation quality beside the loss at every
+evaluation, because a loss that improves while the text gets worse is a failure,
+not a result.
 
 **Running it on Cloud TPU.** `tpu/` holds the operations layer: a read-only
 preflight, a provisioner that refuses to spend without an explicit flag, a

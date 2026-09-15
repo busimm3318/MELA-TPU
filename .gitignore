@@ -220,3 +220,4 @@ __marimo__/
 # MELA additions
 *.pt
 .DS_Store
+results/
