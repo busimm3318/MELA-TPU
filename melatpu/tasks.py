@@ -185,5 +185,7 @@ def cls_loss(P, cfg, x, y, last, us=None, key=None, stratum=None):
         oh = jax.nn.one_hot(g, cfg.get("n_strata", 64), dtype=r.dtype)
         adv = r - oh @ ((oh.T @ r) / jnp.maximum(oh.sum(0), 1.0))
     terms = [-(adv * lp.mean(-1)).mean() for blk in lps for lp in blk]
+    if not terms:                      # the `slot` arm fires no event, so no walk was
+        return task, (task, insts, logits)   # sampled; jnp.stack([]) would raise
     walk = jnp.stack(terms).sum() / max(1, len(lps))
     return task + mu * walk, (task, insts, logits)

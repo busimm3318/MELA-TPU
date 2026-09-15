@@ -178,6 +178,12 @@ def run(arm, seed, steps, d, T, B, layers, lr, mu, out, ckpt_every, eval_every):
         if st:
             P, opt_state, start, log = st["P"], st["opt_state"], st["step"], st["log"]
             print("RESUMED at step %d" % start, flush=True)
+            if start >= steps:
+                # Restarting after a preemption re-runs the whole command, so a finished
+                # arm is reached again. Without this the empty training loop leaves x and y
+                # unbound and the final evaluate() raises, killing every later arm.
+                print("%s already complete at %d steps" % (arm, start), flush=True)
+                return log["evals"][-1] if log["evals"] else {}
 
     rng = np.random.default_rng(seed)
 

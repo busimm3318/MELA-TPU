@@ -26,6 +26,7 @@ gcloud compute tpus queued-resources create "$NAME" \
   --accelerator-type="$ACCEL" --runtime-version="$RUNTIME" \
   --metadata-from-file=startup-script=./startup.sh \
   --metadata="mela-bucket=$BUCKET" \
+  $([ -n "$SERVICE_ACCOUNT" ] && echo --service-account="$SERVICE_ACCOUNT") \
   $([ "$SPOT" = "1" ] && echo --spot)
 set +x
 echo

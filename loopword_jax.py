@@ -188,6 +188,11 @@ def run(arm, seed, steps, d, B, layers, lr, mu, K, k, even_only, out, ckpt_every
         print("D5 theta0 ->", [float(jnp.exp(b["mix"]["log_theta0"]))
                                for b in P["blocks"] if "log_theta0" in b["mix"]], flush=True)
 
+    dom, peak = core.hbm_estimate(cfg, B)
+    print("ARM %s s%d | d=%d n=%d M=%d W=%d L=%d T=%d B=%d | memory: dominant "
+          "[B,W,L,n,n] %.2f GiB, estimated peak %.2f GiB (one 16 GiB chip holds B<=%d)"
+          % (arm, seed, cfg["d"], cfg["n"], cfg["M"], cfg["n_walks"], cfg["walk_len"], T, B,
+             dom / 2 ** 30, peak / 2 ** 30, core.max_batch(cfg)), flush=True)
     ev = tasks.LoopWord(K=K, k=k, seed=10_000 + seed, even_only=even_only)
     t0 = time.perf_counter()
     for step in range(start + 1, steps + 1):
@@ -245,7 +250,10 @@ if __name__ == "__main__":
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--steps", type=int, default=25000)
     ap.add_argument("--d", type=int, default=128)
-    ap.add_argument("--B", type=int, default=256)
+    ap.add_argument("--B", type=int, default=32,
+                    help="32 fits one 16 GiB chip at the stage-1 shape. The old default of "
+                         "256 needs about 50 GiB: measured 1.57/3.15/6.30 GiB at B=8/16/32, "
+                         "exactly linear at 0.197 GiB per example.")
     ap.add_argument("--layers", type=int, default=2)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--mu", type=float, default=0.1)

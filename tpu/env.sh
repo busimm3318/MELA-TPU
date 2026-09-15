@@ -8,7 +8,10 @@ ACCEL="${MELA_ACCEL:-v5litepod-1}"           # ONE chip. Billing is per chip-hou
 RUNTIME="${MELA_RUNTIME:-v2-alpha-tpuv5-lite}"
 SPOT="${MELA_SPOT:-1}"                       # 1 = --spot (about 55-70% off, preemptible)
 BUCKET="${MELA_BUCKET:-}"                    # gs://... for checkpoints, cache and results
-REMOTE_DIR="${MELA_REMOTE_DIR:-/home/\$USER/mela}"
+# The VM runs as whatever account the node is created with. An over-broad default
+# service account lets anything on that VM reach the rest of the project, so name a
+# narrow one. Empty means the project default, which is the broad case.
+SERVICE_ACCOUNT="${MELA_SA:-}"
 
 # List price per chip-hour, USD. Confirm against the pricing page before trusting any
 # estimate a script prints -- the console showed "Pricing information not available".

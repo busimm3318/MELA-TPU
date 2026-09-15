@@ -565,6 +565,32 @@ def config(d, T, chunk=None, walk_len=32, n_walks=64, theta0=1.0, squarings=3, a
     return cfg
 
 
+# Live copies of the edge tensor in a compiled TRAINING step, measured rather than
+# assumed: XLA memory_analysis on the stage-1 shape (d=128, two blocks, two events)
+# gives 1.57 / 3.15 / 6.30 GiB at B = 8 / 16 / 32, i.e. 0.1966 GiB per example and
+# exactly linear. One [B,W,L,n,n] copy is W*L*n*n*4 = 8 MiB per example, so the step
+# holds about 25 of them once the backward pass keeps its residuals.
+_EDGE_COPIES = 25
+
+
+def hbm_estimate(cfg, B, copies=_EDGE_COPIES):
+    """(dominant tensor bytes, estimated peak bytes) for one training step.
+
+    The dominant term is the per-event edge tensor [B, W, L, n, n]. At the stage-1
+    shape one copy is 2.00 GiB at B=256 and the step needs about 50 GiB, so a 16 GiB
+    chip cannot run that batch at all -- it fails at the first step, after the VM is
+    already provisioned and billing. This exists to catch that before the money.
+    """
+    edge = B * cfg["n_walks"] * cfg["walk_len"] * cfg["n"] * cfg["n"] * 4
+    return edge, edge * copies
+
+
+def max_batch(cfg, hbm_gib=16.0, headroom=0.65, copies=_EDGE_COPIES):
+    """Largest batch whose estimated peak fits `headroom` of one chip's memory."""
+    per = hbm_estimate(cfg, 1, copies)[1]
+    return max(1, int(hbm_gib * (2 ** 30) * headroom // max(per, 1)))
+
+
 def config_main(d, T, **sw):
     """The 2026-09-14 approved configuration: D1-D6 plus the log-spaced decay init.
     Mirrors mela260913.Config.main() field for field -- gate J-D compares the two."""

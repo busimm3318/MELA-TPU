@@ -66,6 +66,36 @@ else
   bad "bucket" "MELA_BUCKET unset -- checkpoints and the compilation cache need one"
 fi
 
+echo "== line endings =="
+# startup.sh is uploaded verbatim and executed by a Linux VM. A CRLF in it makes the
+# shebang "#!/usr/bin/env bash" and the boot script dies before installing anything.
+crlf=0
+for f in ./*.sh; do
+  a=$(wc -c < "$f"); b=$(tr -d '\015' < "$f" | wc -c)
+  if [ "$a" != "$b" ]; then bad "$(basename "$f")" "HAS CRLF -- will break on the VM"; crlf=1; fi
+done
+[ "$crlf" = "0" ] && say "tpu/*.sh" "all LF"
+
+echo "== service account (blast radius) =="
+if [ -n "$SERVICE_ACCOUNT" ]; then
+  say "MELA_SA" "$SERVICE_ACCOUNT"
+else
+  bad "MELA_SA" "unset -- the VM will run as the project DEFAULT service account"
+  echo "  the default account is broad: anything running on that VM can reach the rest of"
+  echo "  the project. Make a narrow one once and export MELA_SA:"
+  echo "    gcloud iam service-accounts create mela-tpu --project $proj"
+  echo "    gcloud projects add-iam-policy-binding $proj \\"
+  echo "      --member=serviceAccount:mela-tpu@$proj.iam.gserviceaccount.com \\"
+  echo "      --role=roles/storage.objectAdmin"
+  echo "    export MELA_SA=mela-tpu@$proj.iam.gserviceaccount.com"
+fi
+
+echo "== egress =="
+echo "  the VM installs JAX from the internet at boot, so it needs a route out."
+echo "  TPU VMs created through the gcloud CLI get an external IP by default, which is"
+echo "  enough; ones created in the console may not. These scripts use the CLI."
+echo "  Private Google Access alone is NOT enough -- it reaches Google APIs, not PyPI."
+
 echo "== budget alarm =="
 echo "  a budget alert is an account setting, so run it yourself once:"
 echo "    gcloud billing budgets create --billing-account=BILLING_ID \\"

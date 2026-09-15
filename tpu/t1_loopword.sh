@@ -11,11 +11,16 @@ cd "$(dirname "$0")"; . ./env.sh
 ARMS="${MELA_T1_ARMS:-main oracle-dir legacy-walk dead-hol}"
 SEEDS="${MELA_T1_SEEDS:-0 1}"
 STEPS="${MELA_T1_STEPS:-25000}"
+# 32 fits one 16 GiB chip at the stage-1 shape. The harness default was 256, which
+# needs about 50 GiB: all eight chains would have died at the first step with the
+# VMs already provisioned and billing.
+BATCH="${MELA_T1_BATCH:-32}"
 SEC_PER_STEP="${MELA_SEC_PER_STEP:-}"        # fill in from T0; without it no estimate is honest
 GO=0; for a in "$@"; do [ "$a" = "--yes" ] && GO=1; done
 
 echo "T1 plan: arms [$ARMS] x seeds [$SEEDS] = chains, $STEPS steps each, $ACCEL per chain"
 n=0; for arm in $ARMS; do for s in $SEEDS; do n=$((n+1)); done; done
+echo "batch per chain: $BATCH (one 16 GiB chip; 256 would need 50 GiB)"
 echo "chains: $n   rate: \$$(price_now) per chip-hour   spot: $SPOT"
 if [ -n "$SEC_PER_STEP" ]; then
   awk -v n="$n" -v st="$STEPS" -v sp="$SEC_PER_STEP" -v p="$(price_now)" 'BEGIN{
@@ -36,7 +41,7 @@ for arm in $ARMS; do
     echo "== $name"
     ./provision.sh "$name" --yes
     ./run.sh "$name" --yes -- python loopword_jax.py --arm "$arm" --seed "$s" \
-      --steps "$STEPS" --out "$BUCKET/$name" &
+      --steps "$STEPS" --B "$BATCH" --out "$BUCKET/$name" &
   done
 done
 wait

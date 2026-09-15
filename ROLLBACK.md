@@ -168,3 +168,51 @@ is exact rather than an approximation.
 with the events removed and reports the read perturbation and the size of the
 write. It costs a second pass, so it belongs at evaluation. Removing it removes no
 training behaviour.
+
+
+## 2026-09-15, third pass: an adversarial audit of the cloud layer
+
+Eighty-six agents reviewed the operations scripts and the harnesses along five
+dimensions before any money could be spent, and each finding was then attacked by three
+independent skeptics. Five findings survived; all five were reproduced by hand.
+
+1. **The default batch could not run at all.** The stage-1 fan-out inherited `B=256`.
+   The per-event edge tensor is `[B, W, L, n, n]`, which is 2.00 GiB per copy at that
+   batch, and XLA's memory analysis puts the compiled step at 1.57 / 3.15 / 6.30 GiB for
+   B = 8 / 16 / 32 -- exactly linear at 0.197 GiB per example, so about 50 GiB at 256. A
+   v5e chip has 16 GiB. All eight chains would have died at the first step with eight VMs
+   already provisioned and billing. The default is now 32, `t1_loopword.sh` passes it
+   explicitly rather than inheriting, and `core.hbm_estimate` prints the figure at
+   startup with its constant taken from the measurement rather than assumed.
+2. **The money switch deleted one resource in eight.** gcloud on Windows is a Python
+   program, and Python writes CRLF even into a pipe -- verified on this machine. A
+   multi-line capture therefore carries embedded carriage returns, `for` does not split
+   on CR, and every name but the last was handed back to gcloud with a CR attached. Both
+   deletes then failed and the `||` chain reported "already gone". After a fan-out,
+   `teardown.sh --all` would have deleted one VM and left seven billing overnight while
+   saying it was done. Fixed by stripping CR at capture and per name, by replacing the
+   `||` chain with an explicit check that confirms the resource is actually gone, and by
+   exiting non-zero when a delete fails. Verified against a fake gcloud that emits CRLF.
+3. **The `slot` arm could not compute a loss.** The same empty-terms defect fixed in the
+   language-model loss was still present in the classifier copy.
+4. **The language-model harness was never shipped.** `run.sh` tarred a hand-kept file
+   list that had gone stale, so stage T2 would have failed on a paid VM. It now ships the
+   repository, which is the fix that does not drift.
+5. **Resuming a finished arm crashed.** `charlm_jax.py` called the final evaluation with
+   batch variables that are bound only inside the training loop, so re-running after a
+   preemption died on the first already-complete arm and never reached the rest.
+
+Two further gaps, raised by the operator rather than the audit, are closed in the same
+pass: the VM ran as the project default service account (now `MELA_SA`, with preflight
+refusing to stay quiet about it), and `env.sh` carried a dead `REMOTE_DIR` holding a
+literal backslash.
+
+**And one design gap that no single script could fix.** A preempted TPU Spot VM is
+deleted, not stopped, and nothing recreates it. Checkpointing to a bucket was only half
+the answer. `watchdog.sh` is the other half: it watches the node, relaunches from the
+checkpoint when the process dies, re-provisions when the VM disappears, and is capped by
+restart count and wall clock so that a supervisor which can spend money cannot spend it
+indefinitely.
+
+Rolling back the audit fixes means restoring a fan-out that cannot run and a teardown
+that lies about having stopped the billing. Do not.
